@@ -1,0 +1,62 @@
+<h1>Drive behind introspection</h1>
+First, a researcher's curiosity what is the actual plasticity of this setting and further the urge for complementing rather incomplete, technical statements made around this topic findable everywhere.
+<h1>Testbed outline</h1>
+All virtual, KVM or LXC based,  with a  most recent fedora26 (<strong>kernel 4.11</strong>) as VMs that are acting as the <strong>sender</strong> and <strong>sink</strong> for the runs. Apart from the window scaling, the network stack remaind default configured as coming out of the box.
+
+<strong>Sender</strong> and <strong>Sink</strong> were communicating via a <strong>CORE Emulator </strong>spanned L2 network, which seriously made handling the <strong>bottle-neck-link (1 Gbps, 2ms latency)</strong> setup a breeze for the run operator.
+
+Very basic, though, all what is needed to demonstrate the nominal aspect of the objectives. Certainly, exercising stronger infrastructure (e.g. plain HW) or further tunings (see refs.) will alleviate/taint the picture in specifc directions, though, the principle of the observations will stay the same - which is key.
+
+[caption id="attachment_2511" align="alignnone" width="882"]<img class="alignnone size-full wp-image-2511" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/screenshot-from-2017-08-23-18-12-35.png" alt="Screenshot from 2017-08-23 18-12-35" width="882" height="569" /> Core EMULATOR based L2 test connection with artifcial <strong>bottle-neck-link</strong> in <strong>blue</strong>[/caption]
+<h1>Run</h1>
+<h2>Settings space</h2>
+<blockquote><strong>FED26 defaults</strong>
+
+net.ipv4.tcp_rmem = 4096 87380 <strong>6291456</strong>
+net.ipv4.tcp_wmem = 4096 16384 <strong>4194304</strong></blockquote>
+The overall quantification measurements were done for window max sizes of (stepwidth of 20 % of predecessor in either direction from default)
+<blockquote>2516582 5033164 <strong>6291456 (default)</strong> 7549747 15099494 30198988 60397976</blockquote>
+and settings were always exercised in sync for <strong>tcp_rmem,tcp_wmem. </strong>That was done for convenience purposes for the operator mostly, technically, it makes sense to let <strong>wmem</strong> drag a little behind <strong>rmem. </strong>See reference for details upon the latter - while, studying closely the series graphs should also give the notion of the why.
+
+Moreover, the autoscaling effects of <strong>net.ipv4.tcp_mem </strong>were circumvented by setting those to the systems available max memory, in order to keep the sender sending merely based on what is advertised and not being clamped down by some kernel steered memory conservation approach on either side of the transmission.
+<h2><strong>Instrumentarium</strong></h2>
+All actual measurement taking was done in an automated fashion with the help of <a href="https://flent.org/">flent</a>, currently THE open network performance analysis suite for the TCP/IP stack.
+<h2>Outcome</h2>
+Further, the operator chose the number of <strong>injectors (TCP sender processes)</strong> as a further degree of freedom to influence the <strong>traffic load</strong> onto the <strong>bottle-neck-link</strong>.
+<h3>20 injectors</h3>
+<img class="alignnone size-large wp-image-2573" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/total20.png?w=1024" alt="total20" width="1024" height="296" /><img class="alignnone size-full wp-image-2572" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/pin20png.png" alt="pin20png" width="1947" height="563" /><img class="alignnone size-full wp-image-2571" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/box20.png" alt="box20" width="1947" height="563" />
+<h3>4 injectors</h3>
+<img class="alignnone  wp-image-2576" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/toal4.png" alt="toal4" width="683" height="197" /><img class="alignnone size-full wp-image-2575" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/cdf4.png" alt="cdf4" width="1947" height="563" /><img class="alignnone size-full wp-image-2574" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/box4.png" alt="box4" width="1947" height="563" />
+<h3>1 injector</h3>
+<img class="alignnone size-full wp-image-2579" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/total_1.png" alt="total_1" width="1947" height="563" /><img class="alignnone size-full wp-image-2578" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/cdf_1.png" alt="cdf_1" width="1947" height="563" /><img class="alignnone size-full wp-image-2577" src="https://matthias0tafelmeier.files.wordpress.com/2017/08/box_1.png" alt="box_1" width="1947" height="563" />
+<h2>Interpretation</h2>
+It mostly aligns with the expectations as of which I had:
+<ul>
+    <li>Is the <strong>bottle-neck</strong> not saturated and the sender cannot keep pace with the sink receive advertisements for larger max windows, then a standing queue is formed in the link and or on sink side, which deteriorates overall perceived network latency:
+    <ul>
+        <li>visible in
+        <ul>
+            <li>completely for the 1 injectors run</li>
+                <li>until saturation is reached for the 4 injectors run (at tipping max window 7549747)</li>
+                </ul>
+                </li>
+                </ul>
+                </li>
+                    <li>Otherwise, in a link saturation situation, allowing the sender progressing to send by keeping the TCP sink advertising, can bring down the perceived latency, since then the only clamping factor is the <strong>bottle-neck </strong>and therefore determining is what the <strong>TCP congestion control</strong> (<strong>cubic in this case</strong>) does and can deliver as recognizable by the distinctive sawtooth pattern for the latency samples. A "too small" receive window in this circumstances can therefore artificially clamp down  prematurely  on what the bottle-neck-link actually could deliver to the connections performance-wise.
+                    <ul>
+                        <li>visible in
+                        <ul>
+                            <li>20 injectors run (from tipping max window 7549747 onwards)</li>
+                                <li>4 injectors run (from tipping max window 2516582 onwards)</li>
+                                </ul>
+                                </li>
+                                </ul>
+                                </li>
+                                </ul>
+                                Unexpected to me was that the throughput was nearly not influenced by these alterations at all.
+                                <h1>References</h1>
+                                <h3>TCP specifics for novices</h3>
+                                <ul>
+                                    <li>Fall KR, Stevens WR. TCP/IP Illustrated. Addison-Wesley Professional; 2011., 9780321336316</li>
+                                        <li>Peter L Dordal. <a href="http://intronetworks.cs.luc.edu/current/html/"><i>Introduction to Computer Networks</i></a>. Department of Computer Science: Loyola University Chicago;</li>
+                                        </ul>
