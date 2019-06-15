@@ -1,0 +1,3 @@
+[submodule "blog/output"]
+	path = blog/output
+	url = https://github.com/cherusk/cherusk.github.io.git
