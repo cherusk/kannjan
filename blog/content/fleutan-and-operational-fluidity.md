@@ -7,8 +7,8 @@ Slug: fleutan-and-operational-fluidity
 Status: published
 Attachments: 2017/08/logo.png
 
-[Influence on GitHub](https://github.com/cherusk/fleutan)
-=========================================================
+<!--[Influence on GitHub](https://github.com/cherusk/fleutan)-->
+<!--=========================================================-->
 
 ![logo]({static}2017/08/logo.png){.alignnone .size-full .wp-image-2340 width="1400" height="1183"}
 

@@ -7,100 +7,16 @@ Slug: monitoring-and-tuning-the-linux-networking-stack-egress-tx
 Status: published
 Attachments: 2016/12/ns_tx_driv_qu_scale-svg.png
 
-[Edit on Github](https://github.com/cherusk/kannjan/blob/master/linux_ns_egress)
-================================================================================
-
--   [TL;DR](#TL;DR)
--   [Approach](#Approach)
--   [TX skb traversal starting](#traversal%20starting)
-    -   [Higher Layer](#Higher%20Layer)
-        -   [TCP egress skeleton](#TCP%20egress%20skeleton)
-            -   [sending focal point: tcp\_sendmsg](#)
-            -   [tcp\_write\_xmit and tcp\_transmit\_skb](#tcp_write_xmit%20and%20tcp_transmit_skb)
-        -   [IP code paths](#IP%20code%20paths)
-            -   [ip\_queue\_xmit](#ip_queue_xmit)
-                -   coming data from TCP
-                -   routing subsystem incurred costs
-            -   [ip\_local\_out](#ip_local_out)
-                -   [common tx sink for further protocols (like UDP)](#common%20tx%20sink%20for%20further%20protocols%20(like%20UDP))
-                -   [\_\_ip\_local\_out](#__ip_local_out)
-                -   first netfilter hurdle
-            -   [ip\_output](#ip_output)
-                -   dst\_output
-                -   second netfilter hurdle
-            -   [netfilter and iptables impact](#netfilter%20and%20iptables%20impact)
-            -   [ip\_finish\_ouput](#ip_finish_ouput)
-                -   [ip\_finish\_ouput2](#ip_finish_ouput2)
-                -   [to qdisc - via neighboring modules](#to%20qdisc%20-%20via%20neighboring%20modules)
--   [Queuing Discipline (qdisc)](#qdisc)
-    -   Higher Layer Interplay
-        -   [\_\_dev\_queue\_xmit](#__dev_queue_xmit)
-            -   Driver Interplay - queueful or queueless
-        -   [\_\_dev\_xmit\_skb](#__dev_xmit_skb)
-    -   [Core Mechanisms](#Core%20Mechanisms)
-        -   [struct Qdisc](#struct%20Qdisc)
-        -   [generic Traffic Control interface](#generic%20Traffic%20Control%20interface)
-            -   [enqueue](#enqueue%20and%20dequeue)
-            -   [dequeue](#enqueue%20and%20dequeue)
-            -   [requeue and dev\_requeue\_skb](#requeue%20and%20dev_requeue_skb)
-        -   [\_\_qdisc\_run](#__qdisc_run)
-        -   [qdisc\_restart](#qdisc_restart)
-            -   draining the qdisc
-            -   dequeue\_skb
-    -   [qdisc over multiple driver queues](#qdisc%20over%20multiple%20driver%20queues)
-        -   [multiq](#multiq)
-    -   [Monitoring](#Monitoring)
-        -   [Using Linux Traffic Control (tc)](#Using%20Linux%20Traffic%20Control)
-    -   Tuning
-        -   [choosing proper qdisc](#choosing%20proper%20qdisc)
-        -   [tweaking qdisc draining](#tweaking%20qdisc%20draining)
-        -   [qdisc limit](#qdisc%20limit)
--   [Linux network device subsystem](#device%20subsystem)
-    -   [NAPI / Device driver contract](#NAPI%20/%20Device%20driver%20contract)
-        -   [device egress scheduling](#egress%20device%20scheduling)
-            -   [\_\_netif\_schedule](#__netif_schedule)
-            -   output\_queue device list
-            -   [dev\_kfree\_skb\_irq](#dev_kfree_skb_irq)
-                -   completion\_queue
-        -   [TX softirq processing](#TX%20softirq%20processing)
-            -   egress data processing loop
-                -   net\_tx\_action
--   [Network Device Driver](http://Network%20Device%20Driver)
-    -   [Upper Layer Interplay](#Upper%20Layer%20Interplay)
-        -   [sch\_direct\_xmit](#sch_direct_xmit)
-        -   [dev\_hard\_start\_xmit](#dev_hard_start_xmit)
-        -   [dev\_reque\_skb](#dev_reque_skb)
-        -   [processing feedback](#processing%20feedback)
-    -   [actual driver handover](#actual%20driver%20handover)
-        -   [dev\_queue\_xmit\_nit](#dev_queue_xmit_nit)
-        -   [netdev\_start\_xmit](#netdev_start_xmit)
-    -   [driver queues](#driver%20queues)
-        -   [multiple egress queues](#multiple%20egress%20queues)
-            -   [locking](#locking)
-            -   cpu contention
-        -   [Transmit Packet Steering - XPS](#xps)
-        -   egress driver ring length
-    -   Tuning
-        -   [apply XPS](#apply%20XPS)
-        -   [multi queuing](#Tune%20multi%20queuing)
-            -   adjust queue count
-        -   [adjust queue length](#adjust%20queue%20length)
-    -   [CPU egress election](#election)
-    -   [Hard-IRQs](#Hard-IRQs)
--   Conclusion
--   [Appendix](#Appendix)
-    -   Illustrations
-        -   [Driver Queue Based Scaling](#Driver%20Queue%20Based%20Scaling)
-
 <!--more-->
 
-TL;DR {#TL;DR}
-=====
+# TL;DR {#TL;DR}
+================
 
 With this blog article I'm seeking to complement the [Linux RX Network Stack Monitoring and Tuning](https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/#hardware-accelerated-receive-flow-steering-arfs) with the TX concerns.
 
-Approach {#Approach}
-========
+# Approach {#Approach}
+=================
+======
 
 We'll traverse the Linux Network Stack Transmission from Top to Bottom from userland via high layer kernel concepts like sockets down to the Network Device itself. As the [article about the RX part of the stack](https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/#hardware-accelerated-receive-flow-steering-arfs) covered TX data structures and shared concepts between RX and TX mechanisms quite well, I'll try not to reiterate those here with every scrutiny as far as doable without losing comprehensibility. Base for work was kernel 4.9.
 
@@ -119,40 +35,38 @@ Every userland sending system call you can think of like **sendto(), sendmsg(), 
 
 In code: [/net/ipv4/tcp.c](http://lxr.free-electrons.com/source/net/ipv4/tcp.c#L1097)
 
-<div>
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
->                 size_t size)
-> {
->         struct iovec *iov;
->         struct tcp_sock *tp = tcp_sk(sk);
-> /*...*/
->                         
->             if (forced_push(tp)) {
->                                  tcp_mark_push(tp, skb);
->                                  __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
->                          } else if (skb == tcp_send_head(sk))
->                                  tcp_push_one(sk, mss_now);continue;
-> /*...*/
->                          if (copied)
->                                  tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
->                                  goto do_error;
-> /*...*/
->  
->  out:
->          if (copied)
->                  tcp_push(sk, flags, mss_now, tp->nonagle);
->          TCP_CHECK_TIMER(sk);
->          release_sock(sk);
-> /*...*/
-> }
-> EXPORT_SYMBOL(tcp_sendmsg);
-> ```
+```c
+int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+                size_t size)
+{
+        struct iovec *iov;
+        struct tcp_sock *tp = tcp_sk(sk);
+/*...*/
+                        
+            if (forced_push(tp)) {
+                                 tcp_mark_push(tp, skb);
+                                 __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
+                         } else if (skb == tcp_send_head(sk))
+                                 tcp_push_one(sk, mss_now);continue;
+/*...*/
+                         if (copied)
+                                 tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
+                                 goto do_error;
+/*...*/
+ 
+ out:
+         if (copied)
+                 tcp_push(sk, flags, mss_now, tp->nonagle);
+         TCP_CHECK_TIMER(sk);
+         release_sock(sk);
+/*...*/
+}
+EXPORT_SYMBOL(tcp_sendmsg);
+```
 
 It's intended to spare you from the pkt assembling and error handling code parts. Important are the channels that lead further down. These are the highlighted **tcp\_push** wrappers, which are end up calling **tcp\_write\_xmit.**
 
-</div>
 
 ### tcp\_write\_xmit and tcp\_transmit\_skb {#tcp_write_xmit and tcp_transmit_skb}
 
@@ -161,54 +75,54 @@ First in **tcp\_write\_xmit -** also even throughput and latency relevant - chec
 
 In code: [/net/ipv4/tcp\_output.c](http://lxr.free-electrons.com/source/net/ipv4/tcp_output.c#L2098)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
->                           int push_one, gfp_t gfp)
-> {
->         struct tcp_sock *tp = tcp_sk(sk);
->         struct sk_buff *skb;
->         unsigned int tso_segs, sent_pkts;
->         int cwnd_quota;
-> /*...*/
->         while ((skb = tcp_send_head(sk))) {
->                 unsigned int limit;
->
->                 tso_segs = tcp_init_tso_segs(sk, skb, mss_now);
->                 BUG_ON(!tso_segs);
->
->                 cwnd_quota = tcp_cwnd_test(tp, skb);
->                 if (!cwnd_quota)
->                         break;
-> /*...*/
->
->                 if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
->                         break;
-> /*...*/
-> }
-> ```
+```c
+static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
+                          int push_one, gfp_t gfp)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+        struct sk_buff *skb;
+        unsigned int tso_segs, sent_pkts;
+        int cwnd_quota;
+/*...*/
+        while ((skb = tcp_send_head(sk))) {
+                unsigned int limit;
+
+                tso_segs = tcp_init_tso_segs(sk, skb, mss_now);
+                BUG_ON(!tso_segs);
+
+                cwnd_quota = tcp_cwnd_test(tp, skb);
+                if (!cwnd_quota)
+                        break;
+/*...*/
+
+                if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
+                        break;
+/*...*/
+}
+```
 
 From tcp\_transmit\_skb we're lead into network layer processing via the callback **icsk-&gt;icsk\_af\_ops-&gt;queue\_xmit** which is set to the IPv4 specific **ip\_queue\_xmit()** function during the IPv4 module initialization.
 
 In code: [/net/ipv4/tcp\_output.c](http://lxr.free-electrons.com/source/net/ipv4/tcp_output.c#L908)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
->                             gfp_t gfp_mask)
-> {
->         const struct inet_connection_sock *icsk = inet_csk(sk);
->         struct inet_sock *inet;
->         struct tcp_sock *tp;
->
-> /*...MY COMMENT: tcp specific skb chekcing and forming steps */
->
->         icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
->
-> /*...*/
->
->         return net_xmit_eval(err);
-> }
->
-> ```
+``` 
+static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
+                            gfp_t gfp_mask)
+{
+        const struct inet_connection_sock *icsk = inet_csk(sk);
+        struct inet_sock *inet;
+        struct tcp_sock *tp;
+
+/*...MY COMMENT: tcp specific skb chekcing and forming steps */
+
+        icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
+
+/*...*/
+
+        return net_xmit_eval(err);
+}
+
+```
 
 Though, I don't want to go into tcp tuning knobs in detail since TCP is a highly complex tuning realm for itself. I might cover it in future updates. Excellent literature is around to give you insights if needed in ad hoc fashion.
 
@@ -221,62 +135,62 @@ In this function on the way down, the routing table is consulted.
 
 In code: [/net/ipv4/ip\_output.c](http://lxr.free-electrons.com/source/net/ipv4/ip_output.c#L400)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
-> {
->         struct inet_sock *inet = inet_sk(sk);
->         struct net *net = sock_net(sk);
->         struct ip_options_rcu *inet_opt;
->         struct flowi4 *fl4;
->         struct rtable *rt;
->         struct iphdr *iph;
->         int res;
->
->         /* Skip all of this if the packet is already routed,
->          * f.e. by something like SCTP.
->          */
->         rcu_read_lock();
->         inet_opt = rcu_dereference(inet->inet_opt);
->         fl4 = &fl->u.ip4;
->         rt = skb_rtable(skb);
->         if (rt)
->                 goto packet_routed;
->
->         /* Make sure we can route this packet. */
->         rt = (struct rtable *)__sk_dst_check(sk, 0);
->         if (!rt) {
->
-> /*...*/
->
->                  /* If this fails, retransmit mechanism of transport layer will
->                  * keep trying until route appears or the connection times
->                  * itself out.
->                  */
->                 rt = ip_route_output_ports(net, fl4, sk,
->                                            daddr, inet->inet_saddr,
->                                            inet->inet_dport,
->                                            inet->inet_sport,
->                                            sk->sk_protocol,
->                                            RT_CONN_FLAGS(sk),
->                                            sk->sk_bound_dev_if);
->                 if (IS_ERR(rt))
->                         goto no_route;
->                 sk_setup_caps(sk, &rt->dst);
->         }
->         skb_dst_set_noref(skb, &rt->dst);
->
-> packet_routed:
->
-> /*...*/
->         res = ip_local_out(net, sk, skb);
->         rcu_read_unlock();
->         return res;
->
-> no_route:
-> /*...*/
-> }
-> EXPORT_SYMBOL(ip_queue_xmit);
-> ```
+``` 
+int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
+{
+        struct inet_sock *inet = inet_sk(sk);
+        struct net *net = sock_net(sk);
+        struct ip_options_rcu *inet_opt;
+        struct flowi4 *fl4;
+        struct rtable *rt;
+        struct iphdr *iph;
+        int res;
+
+        /* Skip all of this if the packet is already routed,
+         * f.e. by something like SCTP.
+         */
+        rcu_read_lock();
+        inet_opt = rcu_dereference(inet->inet_opt);
+        fl4 = &fl->u.ip4;
+        rt = skb_rtable(skb);
+        if (rt)
+                goto packet_routed;
+
+        /* Make sure we can route this packet. */
+        rt = (struct rtable *)__sk_dst_check(sk, 0);
+        if (!rt) {
+
+/*...*/
+
+                 /* If this fails, retransmit mechanism of transport layer will
+                 * keep trying until route appears or the connection times
+                 * itself out.
+                 */
+                rt = ip_route_output_ports(net, fl4, sk,
+                                           daddr, inet->inet_saddr,
+                                           inet->inet_dport,
+                                           inet->inet_sport,
+                                           sk->sk_protocol,
+                                           RT_CONN_FLAGS(sk),
+                                           sk->sk_bound_dev_if);
+                if (IS_ERR(rt))
+                        goto no_route;
+                sk_setup_caps(sk, &rt->dst);
+        }
+        skb_dst_set_noref(skb, &rt->dst);
+
+packet_routed:
+
+/*...*/
+        res = ip_local_out(net, sk, skb);
+        rcu_read_unlock();
+        return res;
+
+no_route:
+/*...*/
+}
+EXPORT_SYMBOL(ip_queue_xmit);
+```
 
 In the successful case, a route is available for the destination of the buffer, processing continues with **ip\_local\_out.**
 
@@ -292,19 +206,19 @@ With **ip\_local\_out** we've a wrapper around **\_\_ip\_local\_out** that mainl
 
 In code: [/net/ipv4/ip\_output.c](http://lxr.free-electrons.com/source/net/ipv4/ip_output.c#L400)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> int ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
-> {
->         int err;
->
->         err = __ip_local_out(net, sk, skb);
->         if (likely(err == 1))
->                 err = dst_output(net, sk, skb);
->
->         return err;
-> }
-> EXPORT_SYMBOL_GPL(ip_local_out);
-> ```
+``` 
+int ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+        int err;
+
+        err = __ip_local_out(net, sk, skb);
+        if (likely(err == 1))
+                err = dst_output(net, sk, skb);
+
+        return err;
+}
+EXPORT_SYMBOL_GPL(ip_local_out);
+```
 
 If err is returned as 1, netfilter allowed the pkt to pass and the traversal continues with **dst\_output** further down. Otherwise, netfilter has consumed the pkt.
 
@@ -312,11 +226,11 @@ If err is returned as 1, netfilter allowed the pkt to pass and the traversal con
 
 Here the netfilter hook call at the end of **\_\_ip\_local\_out**
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
->                net, sk, skb, NULL, skb_dst(skb)->dev,
->                dst_output);
-> ```
+``` 
+return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
+               net, sk, skb, NULL, skb_dst(skb)->dev,
+               dst_output);
+```
 
 ### ip\_output
 
@@ -328,12 +242,12 @@ Here you see **ip\_output** condensed to its **essential** **content:** The seco
 
 In code: [/net/ipv4/ip\_output.c](http://lxr.free-electrons.com/source/net/ipv4/ip_output.c#L370)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
->                     net, sk, skb, NULL, dev,
->                     ip_finish_output,
->                     !(IPCB(skb)->flags & IPSKB_REROUTED));
-> ```
+``` 
+return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
+                    net, sk, skb, NULL, dev,
+                    ip_finish_output,
+                    !(IPCB(skb)->flags & IPSKB_REROUTED));
+```
 
 ### netfilter and iptables impact {#netfilter and iptables impact}
 
@@ -347,21 +261,21 @@ I'll put GSO and fragmentation handling aside at first, and concentrate on the t
 
 In code:[/net/ipv4/ip\_output.c](http://lxr.free-electrons.com/source/net/ipv4/ip_output.c#L287)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
-> {
->         unsigned int mtu;
->
-> /*...*/
->         if (skb_is_gso(skb))
->                 return ip_finish_output_gso(net, sk, skb, mtu);
->
->         if (skb->len > mtu || (IPCB(skb)->flags & IPSKB_FRAG_PMTU))
->                 return ip_fragment(net, sk, skb, mtu, ip_finish_output2);
->
->         return ip_finish_output2(net, sk, skb);
-> }
-> ```
+``` 
+static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+        unsigned int mtu;
+
+/*...*/
+        if (skb_is_gso(skb))
+                return ip_finish_output_gso(net, sk, skb, mtu);
+
+        if (skb->len > mtu || (IPCB(skb)->flags & IPSKB_FRAG_PMTU))
+                return ip_fragment(net, sk, skb, mtu, ip_finish_output2);
+
+        return ip_finish_output2(net, sk, skb);
+}
+```
 
 #### ip\_finish\_ouput2
 
@@ -369,35 +283,35 @@ Within here we're at the rim between neighboring and queueing discipline. **dst\
 
 In code:[/net/ipv4/ip\_output.c](http://lxr.free-electrons.com/source/net/ipv4/ip_output.c#L182)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
-> {
-> /*...*/
->         if (unlikely(!neigh))
->                 neigh = __neigh_create(&arp_tbl, &nexthop, dev, false);
->         if (!IS_ERR(neigh)) {
->                 int res = dst_neigh_output(dst, neigh, skb);
->
->                 rcu_read_unlock_bh();
->                 return res;
->         }
-> /*...*/
->         return -EINVAL;
-> }
-> ```
+``` 
+static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+/*...*/
+        if (unlikely(!neigh))
+                neigh = __neigh_create(&arp_tbl, &nexthop, dev, false);
+        if (!IS_ERR(neigh)) {
+                int res = dst_neigh_output(dst, neigh, skb);
+
+                rcu_read_unlock_bh();
+                return res;
+        }
+/*...*/
+        return -EINVAL;
+}
+```
 
 #### to qdisc - via neighboring modules {#to qdisc - via neighboring modules}
 
 The generic interface to neighboring **(ND or ARP)** exposes **dst\_neigh\_output.** Following it's core lines of code:**  
 **
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> hh = &n->hh;
-> if ((n->nud_state & NUD_CONNECTED) && hh->hh_len)
->         return neigh_hh_output(hh, skb);
-> else
->         return n->output(n, skb);
-> ```
+``` 
+hh = &n->hh;
+if ((n->nud_state & NUD_CONNECTED) && hh->hh_len)
+        return neigh_hh_output(hh, skb);
+else
+        return n->output(n, skb);
+```
 
 Here you see, if the neighboring node is in connected state, the layer 2 destination header sections are fetched from a header cache. Else, depending on the neighboring protocol used and the state of the neighboring entry (**NUD - neighbor unreachability detection**) specific actions behind the generic handler **n-&gt;output** are carried out (e.g. neighbor node probing or resolution).
 
@@ -424,52 +338,52 @@ Approaching **\_\_dev\_queue\_xmit** on the other hand, discerns if it's about t
 
 In code: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L3316)
 
-> ``` {#struct Qdisc style="color:#000000;background:#ffffff;"}
-> static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
-> {
->         struct net_device *dev = skb->dev;
->         struct netdev_queue *txq;
->         struct Qdisc *q;
->         int rc = -ENOMEM;
-> /*...*/
->
->         txq = netdev_pick_tx(dev, skb, accel_priv);
->         q = rcu_dereference_bh(txq->qdisc);
->
->         trace_net_dev_queue(skb);
->         if (q->enqueue) {
->                 rc = __dev_xmit_skb(skb, q, dev, txq);
->                 goto out;
->         }
->
->         /* The device has no queue. Common case for software devices:
->            loopback, all the sorts of tunnels...
-> ...*/
->         if (dev->flags & IFF_UP) {
->                 int cpu = smp_processor_id(); /* ok because BHs are off */
->
->                 if (txq->xmit_lock_owner != cpu) {
-> /*...*/
->                         skb = validate_xmit_skb(skb, dev);
->                         if (!skb)
->                                 goto out;
->
->                         HARD_TX_LOCK(dev, txq, cpu);
->
->                         if (!netif_xmit_stopped(txq)) {
->                                 __this_cpu_inc(xmit_recursion);
->                                 skb = dev_hard_start_xmit(skb, dev, txq, &rc);
->                                 __this_cpu_dec(xmit_recursion);
->                                 if (dev_xmit_complete(rc)) {
->                                         HARD_TX_UNLOCK(dev, txq);
->                                         goto out;
->                                 }
->                         }
->                         HARD_TX_UNLOCK(dev, txq);
-> /*...*/
->         return rc;
-> }
-> ```
+```
+static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
+{
+        struct net_device *dev = skb->dev;
+        struct netdev_queue *txq;
+        struct Qdisc *q;
+        int rc = -ENOMEM;
+/*...*/
+
+        txq = netdev_pick_tx(dev, skb, accel_priv);
+        q = rcu_dereference_bh(txq->qdisc);
+
+        trace_net_dev_queue(skb);
+        if (q->enqueue) {
+                rc = __dev_xmit_skb(skb, q, dev, txq);
+                goto out;
+        }
+
+        /* The device has no queue. Common case for software devices:
+           loopback, all the sorts of tunnels...
+...*/
+        if (dev->flags & IFF_UP) {
+                int cpu = smp_processor_id(); /* ok because BHs are off */
+
+                if (txq->xmit_lock_owner != cpu) {
+/*...*/
+                        skb = validate_xmit_skb(skb, dev);
+                        if (!skb)
+                                goto out;
+
+                        HARD_TX_LOCK(dev, txq, cpu);
+
+                        if (!netif_xmit_stopped(txq)) {
+                                __this_cpu_inc(xmit_recursion);
+                                skb = dev_hard_start_xmit(skb, dev, txq, &rc);
+                                __this_cpu_dec(xmit_recursion);
+                                if (dev_xmit_complete(rc)) {
+                                        HARD_TX_UNLOCK(dev, txq);
+                                        goto out;
+                                }
+                        }
+                        HARD_TX_UNLOCK(dev, txq);
+/*...*/
+        return rc;
+}
+```
 
 Then, it either forks into**\_\_dev\_xmit\_skb,** when it's detecting a queueful device to transmit over - doing by checking if the qdisc enqueue callback does exist. Otherwise, it's phasing in a quasi direct transmit over a queueless device by **dev\_hard\_start\_xmit** with first grabbing the lock on the outgoing queue for the driving CPU and clearing it after the transmission attempts. More on [**dev\_hard\_start\_xmit**](#dev_hard_start_xmit) in the driver section.
 
@@ -481,53 +395,53 @@ In Code: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L
 
 -   In case the qdisc has been deactived on purpose, drop the packets.
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED, &q->state))) {
->         __qdisc_drop(skb, &to_free);
->         rc = NET_XMIT_DROP;
-> }
-> ```
+``` 
+if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED, &q->state))) {
+        __qdisc_drop(skb, &to_free);
+        rc = NET_XMIT_DROP;
+}
+```
 
 -   For certain qdisc, when no previous data has been queued in, we can do a direct transmission attempt without queuing it first in the qdisc.
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> else if ((q->flags & TCQ_F_CAN_BYPASS) && !qdisc_qlen(q) &&
->            qdisc_run_begin(q)) {
->         /*
->          * This is a work-conserving queue; there are no old skbs
->          * waiting to be sent out; and the qdisc is not running -
->          * xmit the skb directly.
->          */
->
->         qdisc_bstats_update(q, skb);
->
->         if (sch_direct_xmit(skb, q, dev, txq, root_lock, true)) {
->                 if (unlikely(contended)) {
->                         spin_unlock(&q->busylock);
->                         contended = false;
->                 }
->                 __qdisc_run(q);
->         } else
->                 qdisc_run_end(q);
->
->         rc = NET_XMIT_SUCCESS;
-> }
-> ```
+``` 
+else if ((q->flags & TCQ_F_CAN_BYPASS) && !qdisc_qlen(q) &&
+           qdisc_run_begin(q)) {
+        /*
+         * This is a work-conserving queue; there are no old skbs
+         * waiting to be sent out; and the qdisc is not running -
+         * xmit the skb directly.
+         */
+
+        qdisc_bstats_update(q, skb);
+
+        if (sch_direct_xmit(skb, q, dev, txq, root_lock, true)) {
+                if (unlikely(contended)) {
+                        spin_unlock(&q->busylock);
+                        contended = false;
+                }
+                __qdisc_run(q);
+        } else
+                qdisc_run_end(q);
+
+        rc = NET_XMIT_SUCCESS;
+}
+```
 
 -   This is the "regular case", as it were. The packets are first handed over to the queuing discipline and therefore put under its discretion of scheduling and queuing the data. The actual transmission is driven by the TX softirq context at the next opportunity, initiated by **\_\_qdisc\_run**. For details about the **\_\_qdisc\_run** read on in this section.
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> else {
->         rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
->         if (qdisc_run_begin(q)) {
->                 if (unlikely(contended)) {
->                         spin_unlock(&q->busylock);
->                         contended = false;
->                 }
->                 __qdisc_run(q);
->         }
-> }
-> ```
+``` 
+else {
+        rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+        if (qdisc_run_begin(q)) {
+                if (unlikely(contended)) {
+                        spin_unlock(&q->busylock);
+                        contended = false;
+                }
+                __qdisc_run(q);
+        }
+}
+```
 
 ### **Core Mechanisms** {#Core}
 
@@ -541,18 +455,18 @@ You can see here the most important part of the Qdisc interface by which every q
 
 In Code: [/include/net/sch\_generic.h](http://lxr.free-electrons.com/source/include/net/sch_generic.h#L47)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct Qdisc {
->         int                     (*enqueue)(struct sk_buff *skb, struct Qdisc *dev);
->         struct sk_buff *        (*dequeue)(struct Qdisc *dev);
-> /*...*/
->         struct Qdisc_ops        *ops;
-> /*...*/
->         struct Qdisc            *__parent;
->         struct netdev_queue     *dev_queue;
-> /*...*/
-> }
-> ```
+``` 
+struct Qdisc {
+        int                     (*enqueue)(struct sk_buff *skb, struct Qdisc *dev);
+        struct sk_buff *        (*dequeue)(struct Qdisc *dev);
+/*...*/
+        struct Qdisc_ops        *ops;
+/*...*/
+        struct Qdisc            *__parent;
+        struct netdev_queue     *dev_queue;
+/*...*/
+}
+```
 
 Either for putting skbs under its control or draining piled up skbs from previous TX runs from there. **Every Qdisc** instance is **associated** with a **net\_device** by its **queue**, as you can see. The \***\_\_parent** pointer gives evidence for the high nestability of Qdiscs. Internally, for realizing its logic, Qdisc might hold several virtual callback hubs with help of **<span style="color:#7f0055;">struct</span> Qdisc\_ops \*ops.**
 
@@ -562,18 +476,18 @@ Either for putting skbs under its control or draining piled up skbs from previou
 
 In Code: [/net/sched/sch\_generic.c](http://lxr.free-electrons.com/source/net/sched/sch_generic.c#L48)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> static inline int dev_requeue_skb(struct sk_buff *skb, struct Qdisc *q)
->  {
->          q->gso_skb = skb;
->          q->qstats.requeues++;
->          qdisc_qstats_backlog_inc(q, skb);
->          q->q.qlen++;    /* it's still part of the queue */
->          __netif_schedule(q);
->  
->          return 0;
->  }
-> ```
+``` 
+static inline int dev_requeue_skb(struct sk_buff *skb, struct Qdisc *q)
+ {
+         q->gso_skb = skb;
+         q->qstats.requeues++;
+         qdisc_qstats_backlog_inc(q, skb);
+         q->q.qlen++;    /* it's still part of the queue */
+         __netif_schedule(q);
+ 
+         return 0;
+ }
+```
 
 In former kernel versions Qdisc instances used to have a **requeue** callback in their virtual interfaces.
 
@@ -583,37 +497,37 @@ When a device has been scheduled in for a transmission going over it, **\_\_qdis
 
 That's the code of [\_\_qdisc\_run](http://lxr.free-electrons.com/source/net/sched/sch_generic.c#L248):
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> int quota = weight_p;
-> int packets;
->
-> while (qdisc_restart(q, &packets)) {
->         /*
->         * Ordered by possible occurrence: Postpone processing if
->         * 1. we've exceeded packet quota
->         * 2. another process needs the CPU;
->         */
->         quota -= packets;
->         if (quota <= 0 || need_resched()) {
->                 __netif_schedule(q);
->                 break;
->         }
-> }
->
-> qdisc_run_end(q);
-> ```
+``` 
+int quota = weight_p;
+int packets;
+
+while (qdisc_restart(q, &packets)) {
+        /*
+        * Ordered by possible occurrence: Postpone processing if
+        * 1. we've exceeded packet quota
+        * 2. another process needs the CPU;
+        */
+        quota -= packets;
+        if (quota <= 0 || need_resched()) {
+                __netif_schedule(q);
+                break;
+        }
+}
+
+qdisc_run_end(q);
+```
 
 You may remember the [**budget** tuning on **RX** side](https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/#adjusting-the-netrxaction-budget) for the **net\_rx\_action** run by the RX NAPI loop for the RX softIRQ processing. The same setting is taking effect in a similar manner on the TX side as the packet **quota**. One can easily confirm that by following the **weight\_p** global sysctl configuration variable to where it is exposed to the userland via the [**procFS** interface for the networking core](http://lxr.free-electrons.com/source/net/core/sysctl_net_core.c#L270):
 
-> ``` {#dev_weight style="color:#000000;background:#ffffff none repeat scroll 0 0;"}
-> {
->         .procname       = "dev_weight",
->         .data           = &weight_p,
->         .maxlen         = sizeof(int),
->         .mode           = 0644,
->         .proc_handler   = proc_dointvec
-> },
-> ```
+```c
+{
+        .procname       = "dev_weight",
+        .data           = &weight_p,
+        .maxlen         = sizeof(int),
+        .mode           = 0644,
+        .proc_handler   = proc_dointvec
+},
+```
 
 Therefore, it has absolutely the same value and it's the upper limit of queued packets one instance of a TX softIRQ loop can deal with transmitting out until it releases the device and it's queue and does reschedule the device further transmissions if needed. We are coming to that when a reschedule is deemed necessary int the subsection covering **\_\_netif\_schedule** itself.
 
@@ -621,28 +535,28 @@ Therefore, it has absolutely the same value and it's the upper limit of queued p
 
 In [/net/sched/sch\_generic.c](http://lxr.free-electrons.com/source/net/sched/sch_generic.c#L228):
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct netdev_queue *txq;
-> struct net_device *dev;
-> spinlock_t *root_lock;
-> struct sk_buff *skb;
-> bool validate;
->
-> /* Dequeue packet */
-> skb = dequeue_skb(q, &validate, packets);
-> if (unlikely(!skb))
->         return 0;
-> ```
+```c 
+struct netdev_queue *txq;
+struct net_device *dev;
+spinlock_t *root_lock;
+struct sk_buff *skb;
+bool validate;
+
+/* Dequeue packet */
+skb = dequeue_skb(q, &validate, packets);
+if (unlikely(!skb))
+        return 0;
+```
 
 First, previously queued socket buffers (packets) are fetched from the qdisc. I'm not accidentally using the plural here, **dequeue\_skb** really can return a **list of packets**, depending on the behaviour of the current qdisc.
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> root_lock = qdisc_lock(q);
-> dev = qdisc_dev(q);
-> txq = skb_get_tx_queue(dev, skb);
->
-> return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
-> ```
+```c
+root_lock = qdisc_lock(q);
+dev = qdisc_dev(q);
+txq = skb_get_tx_queue(dev, skb);
+
+return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+```
 
 Then the device and its queue that are attached to the qdisc are determined. After that, **qdisc\_restart** is phasing in a transmission attempt via the TX device and its queue.
 
@@ -662,50 +576,50 @@ The init code is trivial and as expected so I'll spare it: Key is, that multiq i
 
 [Enqueuing](http://lxr.free-electrons.com/source/net/sched/sch_multiq.c#L67) works as with the targeted queue were a single queue with the multiq initiating the traffic control classification if present and further on framing the enqueuing into the sub queueing discipline with embedding it incontrol logic. Important: it does thereby **not deteriorate XPS** going abouts. Consult the **XPS** section of this post for more details.
 
-> ``` {style="color:#000000;background:#ffffff;"}
->         qdisc = multiq_classify(skb, sch, &ret);
-> /*...*/
->         ret = qdisc_enqueue(skb, qdisc, to_free);
->         if (ret == NET_XMIT_SUCCESS) {
->                 sch->q.qlen++;
->                 return NET_XMIT_SUCCESS;
->         }
->         if (net_xmit_drop_count(ret))
->                 qdisc_qstats_drop(sch);
->         return ret;
-> ```
+``` 
+        qdisc = multiq_classify(skb, sch, &ret);
+/*...*/
+        ret = qdisc_enqueue(skb, qdisc, to_free);
+        if (ret == NET_XMIT_SUCCESS) {
+                sch->q.qlen++;
+                return NET_XMIT_SUCCESS;
+        }
+        if (net_xmit_drop_count(ret))
+                qdisc_qstats_drop(sch);
+        return ret;
+```
 
 [Dequeuing](http://lxr.free-electrons.com/source/net/sched/sch_multiq.c#L95) does what stated in the [man page](https://linux.die.net/man/8/tc). *It will cycle though the bands and verify that the hardware queue associated with the band is not stopped prior to dequeuing a packet. It's meant to alleviate head of line blocking.  
 *
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct multiq_sched_data *q = qdisc_priv(sch);
-> struct Qdisc *qdisc;
-> struct sk_buff *skb;
-> int band;
->
-> for (band = 0; band < q->bands; band++) {
->         /* cycle through bands to ensure fairness */
->         q->curband++;
->         if (q->curband >= q->bands)
->                 q->curband = 0;
->
->         /* Check that target subqueue is available before
->          * pulling an skb to avoid head-of-line blocking.
->          */
->         if (!netif_xmit_stopped(
->             netdev_get_tx_queue(qdisc_dev(sch), q->curband))) {
->                 qdisc = q->queues[q->curband];
->                 skb = qdisc->dequeue(qdisc);
->                 if (skb) {
->                         qdisc_bstats_update(sch, skb);
->                         sch->q.qlen--;
->                         return skb;
->                 }
->         }
-> }
-> return NULL;
-> ```
+``` 
+struct multiq_sched_data *q = qdisc_priv(sch);
+struct Qdisc *qdisc;
+struct sk_buff *skb;
+int band;
+
+for (band = 0; band < q->bands; band++) {
+        /* cycle through bands to ensure fairness */
+        q->curband++;
+        if (q->curband >= q->bands)
+                q->curband = 0;
+
+        /* Check that target subqueue is available before
+         * pulling an skb to avoid head-of-line blocking.
+         */
+        if (!netif_xmit_stopped(
+            netdev_get_tx_queue(qdisc_dev(sch), q->curband))) {
+                qdisc = q->queues[q->curband];
+                skb = qdisc->dequeue(qdisc);
+                if (skb) {
+                        qdisc_bstats_update(sch, skb);
+                        sch->q.qlen--;
+                        return skb;
+                }
+        }
+}
+return NULL;
+```
 
 Whereby a **band** is a one of the multiple TX queues and its associated qdisc.
 
@@ -715,11 +629,11 @@ Whereby a **band** is a one of the multiple TX queues and its associated qdisc.
 
 For interacting with the Qeueing Discipline and its Traffic Control mechanisms from userland, there is a tool called **tc (man 8 tc)**.
 
-> **linux:\~\$** tc -s -d qdisc show dev enp2s0  
-> **qdisc** **pfifo\_fast** 0: root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1  
-> Sent 52084489 bytes 434946 pkt (**dropped** 0, **overlimits** 0 **requeues** 27)  
-> **backlog** 0b 0p **requeues** 27**  
-> **
+**linux:\~\$** tc -s -d qdisc show dev enp2s0  
+**qdisc** **pfifo\_fast** 0: root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1  
+Sent 52084489 bytes 434946 pkt (**dropped** 0, **overlimits** 0 **requeues** 27)  
+**backlog** 0b 0p **requeues** 27**  
+**
 
 Explanation of relevant fields:
 
@@ -740,19 +654,19 @@ I cannot and won't cover every aspect of qdisc algorithms and which one to choos
 
 Example for replacing for an iface the default qdisc **pfifo\_fast** with a **fq\_codel**:
 
->     # tc qdisc replace dev <your_dev> root fq_codel
+    # tc qdisc replace dev <your_dev> root fq_codel
 
 For exchanging the leaf qdiscs of a multi queueing qdisc you can first adopt the default qdisc set for your net stack by:
 
->     # sysctl -w net.core.default_qdisc=fq_codel
+    # sysctl -w net.core.default_qdisc=fq_codel
 
 After resetting the root mq qdisc for your iface, the previously set default qdisc is in place for every leaf in the mq qdisc:
 
->     # tc qdisc replace dev <your_dev> root mq
+    # tc qdisc replace dev <your_dev> root mq
 
 You can simply verify by doing:
 
->     # tc -s qdisc show <your_dev>
+    # tc -s qdisc show <your_dev>
 
 #### tweaking qdisc draining {#tweaking qdisc draining}
 
@@ -769,7 +683,7 @@ When you see numerous dropping and a high backlog, that might be an indicator th
 
 Adjusting the value:
 
->     # sysctl -w net.core.dev_weight=900
+    # sysctl -w net.core.dev_weight=900
 
 -   **XPS**
     -   in SMP processor based systems with drivers supporting multi queuing, it can increase the outflux from qdisc by alleviating **CPU contention** for the **TX queues** and driver rings and further the need for qdisc reenqueuings as a symptom of high contention. Additionally, it increases the skb **cache locality** and therefore the **cache hit ratio** for network processing of the transmitting CPUs. More in the [driver section](#xps).
@@ -782,14 +696,14 @@ Though, in certain cases of high transmission rates, you might want your packets
 
 Qdiscs have it set in different ways. For the default allocated qdisc **pfifo\_fast** with default length 1000 you have to do it with iproute2:
 
-> \# ip link set enp2s0 txqueuelen 1200
+\# ip link set enp2s0 txqueuelen 1200
 
 Checking qdisc length:
 
-> \$ ip l
->
-> 1: enp2s0: &lt;BROADCAST,MULTICAST,UP,LOWER\_UP&gt; mtu 1500 qdisc **pfifo\_fast** state UP mode DEFAULT group default **qlen 1200**  
-> link/ether fc:aa:14:1c:5d:ea brd ff:ff:ff:ff:ff:ff
+\$ ip l
+
+1: enp2s0: &lt;BROADCAST,MULTICAST,UP,LOWER\_UP&gt; mtu 1500 qdisc **pfifo\_fast** state UP mode DEFAULT group default **qlen 1200**  
+link/ether fc:aa:14:1c:5d:ea brd ff:ff:ff:ff:ff:ff
 
 Linux network device subsystem {#device subsystem}
 ==============================
@@ -809,18 +723,18 @@ Actually, **\_\_netif\_schedule** is only checking if the qdisc queue has alread
 
 Refer to: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L2254)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct softnet_data *sd;
-> unsigned long flags;
->
-> local_irq_save(flags);
-> sd = &__get_cpu_var(softnet_data);
-> q->next_sched = NULL;
-> *sd->output_queue_tailp = q;
-> sd->output_queue_tailp = &q->next_sched;
-> raise_softirq_irqoff(NET_TX_SOFTIRQ);
-> local_irq_restore(flags);
-> ```
+``` 
+struct softnet_data *sd;
+unsigned long flags;
+
+local_irq_save(flags);
+sd = &__get_cpu_var(softnet_data);
+q->next_sched = NULL;
+*sd->output_queue_tailp = q;
+sd->output_queue_tailp = &q->next_sched;
+raise_softirq_irqoff(NET_TX_SOFTIRQ);
+local_irq_restore(flags);
+```
 
 The steps it takes mainly are:
 
@@ -836,19 +750,19 @@ You may have noticed that the driver mainly runs in interrupt context, and we it
 
 In code [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L2331):
 
-> ``` {style="color:#000000;background:#ffffff none repeat scroll 0 0;"}
-> void __dev_kfree_skb_irq(struct sk_buff *skb, enum skb_free_reason reason)
-> {
-> /*...*/
->
->         get_kfree_skb_cb(skb)->reason = reason;
->         local_irq_save(flags);
->         skb->next = __this_cpu_read(softnet_data.completion_queue);
->         __this_cpu_write(softnet_data.completion_queue, skb);
->         raise_softirq_irqoff(NET_TX_SOFTIRQ);
->         local_irq_restore(flags);
-> }
-> ```
+``` 
+void __dev_kfree_skb_irq(struct sk_buff *skb, enum skb_free_reason reason)
+{
+/*...*/
+
+        get_kfree_skb_cb(skb)->reason = reason;
+        local_irq_save(flags);
+        skb->next = __this_cpu_read(softnet_data.completion_queue);
+        __this_cpu_write(softnet_data.completion_queue, skb);
+        raise_softirq_irqoff(NET_TX_SOFTIRQ);
+        local_irq_restore(flags);
+}
+```
 
 Cleaning up is then done by the softirq processing loop in uncritical non-interrupt context. Notice, that its the same softirq loop to handle as for the egress transmission processing, namely **NET\_TX\_SOFTIRQ**. Details are given further down.**  
 **
@@ -867,69 +781,69 @@ Reference to code: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/co
     -   here you can see the **completion\_queue** resurface again
     -   the rest is about freeing of skb held kernel memory
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct softnet_data *sd = this_cpu_ptr(&softnet_data);
->
->         if (sd->completion_queue) {
->                 struct sk_buff *clist;
->
->                 local_irq_disable();
->                 clist = sd->completion_queue;
->                 sd->completion_queue = NULL;
->                 local_irq_enable();
->
->                 while (clist) {
->                         struct sk_buff *skb = clist;
->                         clist = clist->next;
->
->                         WARN_ON(atomic_read(&skb->users));
->                         if (likely(get_kfree_skb_cb(skb)->reason == SKB_REASON_CONSUMED))
->                                 trace_consume_skb(skb);
->                         else
->                                 trace_kfree_skb(skb, net_tx_action);
->
->                         if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
->                                 __kfree_skb(skb);
->                         else
->                                 __kfree_skb_defer(skb);
->                 }
->
->                 __kfree_skb_flush();
->         }
-> ```
+``` 
+struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+        if (sd->completion_queue) {
+                struct sk_buff *clist;
+
+                local_irq_disable();
+                clist = sd->completion_queue;
+                sd->completion_queue = NULL;
+                local_irq_enable();
+
+                while (clist) {
+                        struct sk_buff *skb = clist;
+                        clist = clist->next;
+
+                        WARN_ON(atomic_read(&skb->users));
+                        if (likely(get_kfree_skb_cb(skb)->reason == SKB_REASON_CONSUMED))
+                                trace_consume_skb(skb);
+                        else
+                                trace_kfree_skb(skb, net_tx_action);
+
+                        if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
+                                __kfree_skb(skb);
+                        else
+                                __kfree_skb_defer(skb);
+                }
+
+                __kfree_skb_flush();
+        }
+```
 
 -   transmitting packets by processing devices that have been registered for having something to transmit
     -   the previously **output\_queue** is consulted here to decide on what device to schedule in for processing next
     -   then the **qdisc\_run** ushers in packet transmission via the **qeueing discipline** interface
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> if (sd->output_queue) {
->                 struct Qdisc *head;
->
->                 local_irq_disable();
->                 head = sd->output_queue;
->                 sd->output_queue = NULL;
->                 sd->output_queue_tailp = &sd->output_queue;
->                 local_irq_enable();
->
->                 while (head) {
->                         struct Qdisc *q = head;
->                         spinlock_t *root_lock;
->
->                         head = head->next_sched;
->
->                         root_lock = qdisc_lock(q);
->                         spin_lock(root_lock);
->                         /* We need to make sure head->next_sched is read
->                          * before clearing __QDISC_STATE_SCHED
->                          */
->                         smp_mb__before_atomic();
->                         clear_bit(__QDISC_STATE_SCHED, &q->state);
->                         qdisc_run(q);
->                         spin_unlock(root_lock);
->                 }
->         }
-> ```
+``` 
+if (sd->output_queue) {
+                struct Qdisc *head;
+
+                local_irq_disable();
+                head = sd->output_queue;
+                sd->output_queue = NULL;
+                sd->output_queue_tailp = &sd->output_queue;
+                local_irq_enable();
+
+                while (head) {
+                        struct Qdisc *q = head;
+                        spinlock_t *root_lock;
+
+                        head = head->next_sched;
+
+                        root_lock = qdisc_lock(q);
+                        spin_lock(root_lock);
+                        /* We need to make sure head->next_sched is read
+                         * before clearing __QDISC_STATE_SCHED
+                         */
+                        smp_mb__before_atomic();
+                        clear_bit(__QDISC_STATE_SCHED, &q->state);
+                        qdisc_run(q);
+                        spin_unlock(root_lock);
+                }
+        }
+```
 
 One may noticed, that the next net device for transmission is taken from the tail of the output\_queue, what may not always be the necessarly fairest approach among the devices.
 
@@ -947,45 +861,45 @@ This function forms the driver feedback reaction framing around the transmission
 
 In Code: [/net/sched/sch\_generic.c](http://lxr.free-electrons.com/source/net/sched/sch_generic.c)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> /* And release qdisc */
-> spin_unlock(root_lock);
->
-> /*...*/
->
-> if (likely(skb)) {
->         HARD_TX_LOCK(dev, txq, smp_processor_id());
->         if (!netif_xmit_frozen_or_stopped(txq))
->                 skb = dev_hard_start_xmit(skb, dev, txq, &ret);
->
->         HARD_TX_UNLOCK(dev, txq);
-> } else {
->         spin_lock(root_lock);
->         return qdisc_qlen(q);
-> }
-> spin_lock(root_lock);
-> ```
+``` 
+/* And release qdisc */
+spin_unlock(root_lock);
+
+/*...*/
+
+if (likely(skb)) {
+        HARD_TX_LOCK(dev, txq, smp_processor_id());
+        if (!netif_xmit_frozen_or_stopped(txq))
+                skb = dev_hard_start_xmit(skb, dev, txq, &ret);
+
+        HARD_TX_UNLOCK(dev, txq);
+} else {
+        spin_lock(root_lock);
+        return qdisc_qlen(q);
+}
+spin_lock(root_lock);
+```
 
 -   Requeuing has already been introdiced further up. Here, you its application. Every time the device reports, it cannot send anymore - may it be because its busy or for some other reason, then left overs are being requeued to the qdisc.
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> if (dev_xmit_complete(ret)) {
->         /* Driver sent out skb successfully or skb was consumed */
->         ret = qdisc_qlen(q);
-> } else {
->         /* Driver returned NETDEV_TX_BUSY - requeue skb */
->         if (unlikely(ret != NETDEV_TX_BUSY))
->                 net_warn_ratelimited("BUG %s code %d qlen %d\n",
->                                      dev->name, ret, q->q.qlen);
->
->         ret = dev_requeue_skb(skb, q);
-> }
->
-> if (ret && netif_xmit_frozen_or_stopped(txq))
->         ret = 0;
->
-> return ret;
-> ```
+``` 
+if (dev_xmit_complete(ret)) {
+        /* Driver sent out skb successfully or skb was consumed */
+        ret = qdisc_qlen(q);
+} else {
+        /* Driver returned NETDEV_TX_BUSY - requeue skb */
+        if (unlikely(ret != NETDEV_TX_BUSY))
+                net_warn_ratelimited("BUG %s code %d qlen %d\n",
+                                     dev->name, ret, q->q.qlen);
+
+        ret = dev_requeue_skb(skb, q);
+}
+
+if (ret && netif_xmit_frozen_or_stopped(txq))
+        ret = 0;
+
+return ret;
+```
 
 ### dev\_hard\_start\_xmit
 
@@ -993,41 +907,41 @@ Here you can see the loop where single buffers are passed further to the hands o
 
 Code Reference: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L2920)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> struct sk_buff *skb = first;
->         int rc = NETDEV_TX_OK;
->
->         while (skb) {
->                 struct sk_buff *next = skb->next;
->
->                 skb->next = NULL;
->                 rc = xmit_one(skb, dev, txq, next != NULL);
->                 if (unlikely(!dev_xmit_complete(rc))) {
->                         skb->next = next;
->                         goto out;
->                 }
->
->                 skb = next;
->                 if (netif_xmit_stopped(txq) && skb) {
->                         rc = NETDEV_TX_BUSY;
->                         break;
->                 }
->         }
-> ```
+``` 
+struct sk_buff *skb = first;
+        int rc = NETDEV_TX_OK;
+
+        while (skb) {
+                struct sk_buff *next = skb->next;
+
+                skb->next = NULL;
+                rc = xmit_one(skb, dev, txq, next != NULL);
+                if (unlikely(!dev_xmit_complete(rc))) {
+                        skb->next = next;
+                        goto out;
+                }
+
+                skb = next;
+                if (netif_xmit_stopped(txq) && skb) {
+                        rc = NETDEV_TX_BUSY;
+                        break;
+                }
+        }
+```
 
 xmit\_one gives with **dev\_queue\_xmit\_nit** a copy of the skb to every tap registered in the path and then phases in the final hand over of the buffer to the driver egress mechanisms by invoking **netdev\_start\_xmit**.
 
 In Code: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L2903)
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
->         dev_queue_xmit_nit(skb, dev);
->
-> len = skb->len;
-> trace_net_dev_start_xmit(skb, dev);
-> rc = netdev_start_xmit(skb, dev, txq, more);
-> trace_net_dev_xmit(skb, rc, dev, len);
-> ```
+``` 
+if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+        dev_queue_xmit_nit(skb, dev);
+
+len = skb->len;
+trace_net_dev_start_xmit(skb, dev);
+rc = netdev_start_xmit(skb, dev, txq, more);
+trace_net_dev_xmit(skb, rc, dev, len);
+```
 
 ### actual driver handover {#actual driver handover}
 
@@ -1039,22 +953,22 @@ Code ref: [/include/linux/netdevice.h](http://lxr.free-electrons.com/source/incl
 
 1.  the virtual interface **dev-&gt;netdev\_ops** of the driver is fetched
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> const struct net_device_ops *ops = dev->netdev_ops;
-> int rc;
->
-> rc = __netdev_start_xmit(ops, skb, dev, more);
-> if (rc == NETDEV_TX_OK)
->         txq_trans_update(txq);
-> ```
+``` 
+const struct net_device_ops *ops = dev->netdev_ops;
+int rc;
+
+rc = __netdev_start_xmit(ops, skb, dev, more);
+if (rc == NETDEV_TX_OK)
+        txq_trans_update(txq);
+```
 
 -   and used for the skb handover in **\_\_netdev\_start\_xmit  
    **to access the driver callback **ndo\_start\_xmit**
 
-> ``` {style="color:#000000;background:#ffffff;"}
-> skb->xmit_more = more ? 1 : 0;
-> return ops->ndo_start_xmit(skb, dev);
-> ```
+``` 
+skb->xmit_more = more ? 1 : 0;
+return ops->ndo_start_xmit(skb, dev);
+```
 
 From now on all processing is driver specific. The egress core from now on only has a reactive role to feedback given by drivers. How the tx-rings (driver queues) are maintained and handled is therefore driver specific code. The association between flow and driver tx-ring is drawn from the skb passed over. The skb keeps the ring index in its context.
 
@@ -1108,24 +1022,24 @@ A means to tackle high **cpu contention** is a kernel mechanism called **XPS**. 
 
 **netdev\_pick\_tx** consulted in \_\_**dev\_queue\_xmit**, deals with the actual TX queue selection: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#netdev_pick_tx)
 
-> ``` {style="color:#000000;background:#ffffff none repeat scroll 0 0;"}
-> int queue_index = 0;
->
-> /*...*/
->
->         if (dev->real_num_tx_queues != 1) {
->                 const struct net_device_ops *ops = dev->netdev_ops;
->                 if (ops->ndo_select_queue)
->                         queue_index = ops->ndo_select_queue(dev, skb, accel_priv,
->                                                             __netdev_pick_tx);
->                 else
->                         queue_index = __netdev_pick_tx(dev, skb);
-> /*...*/
->         }
->
->         skb_set_queue_mapping(skb, queue_index);
->         return netdev_get_tx_queue(dev, queue_index);
-> ```
+``` 
+int queue_index = 0;
+
+/*...*/
+
+        if (dev->real_num_tx_queues != 1) {
+                const struct net_device_ops *ops = dev->netdev_ops;
+                if (ops->ndo_select_queue)
+                        queue_index = ops->ndo_select_queue(dev, skb, accel_priv,
+                                                            __netdev_pick_tx);
+                else
+                        queue_index = __netdev_pick_tx(dev, skb);
+/*...*/
+        }
+
+        skb_set_queue_mapping(skb, queue_index);
+        return netdev_get_tx_queue(dev, queue_index);
+```
 
 Quite a few steps:
 
@@ -1144,25 +1058,25 @@ Quite a few steps:
 
 Quite of intereset though, is **get\_xps\_queue**. Having a look at it answers the question if a CPU to TX queue mapping is necessarly confined to a 1:1 relationship - the rest shows up as expected: [/net/core/dev.c](http://lxr.free-electrons.com/source/net/core/dev.c#L3208)
 
-> ``` {style="color:#000000;background:#ffffff;"}
->         dev_maps = rcu_dereference(dev->xps_maps);
->         if (dev_maps) {
->                 map = rcu_dereference(
->                     dev_maps->cpu_map[skb->sender_cpu - 1]);
->                 if (map) {
->                         if (map->len == 1)
->                                 queue_index = map->queues[0];
->                         else
->                                 queue_index = map->queues[reciprocal_scale(skb_get_hash(skb),
->                                                                            map->len)];
->                         if (unlikely(queue_index >= dev->real_num_tx_queues))
->                                 queue_index = -1;
->                 }
->         }
->         rcu_read_unlock();
->
->         return queue_index;
-> ```
+``` 
+        dev_maps = rcu_dereference(dev->xps_maps);
+        if (dev_maps) {
+                map = rcu_dereference(
+                    dev_maps->cpu_map[skb->sender_cpu - 1]);
+                if (map) {
+                        if (map->len == 1)
+                                queue_index = map->queues[0];
+                        else
+                                queue_index = map->queues[reciprocal_scale(skb_get_hash(skb),
+                                                                           map->len)];
+                        if (unlikely(queue_index >= dev->real_num_tx_queues))
+                                queue_index = -1;
+                }
+        }
+        rcu_read_unlock();
+
+        return queue_index;
+```
 
 -   it determines the configures per CPU to TX queue map
 -   trivially fetch the mapping value if it's 1:1 association
@@ -1183,11 +1097,11 @@ Prerequisites:
 
 Kernels with XPS configured offer a bitmap per TX queue via **SysFs**:
 
->     /sys/class/net//queues/tx-/xps_cpus
+    /sys/class/net//queues/tx-/xps_cpus
 
 E.g. to allocate **CPU1** to **tx\_queue 2** for driver behind **iface enp2s0**:
 
-> echo **1** &gt; /sys/class/net/**enp2s0**/queues/**tx-2**/xps\_cpus
+echo **1** &gt; /sys/class/net/**enp2s0**/queues/**tx-2**/xps\_cpus
 
 ### **multi queuing**
 
@@ -1199,27 +1113,27 @@ Adjustments are being done symmetrically to the approach on [RX side](https://bl
 
 Check for the current and max queues number supported by the NIC driver first.
 
-> \# ethtool -l **ens3**
->
-> Channel parameters for **ens3**:  
-> Pre-set maximums:  
-> RX:        0  
-> **TX:        0**  
-> Other:        0  
-> **Combined:    8**  
-> Current hardware settings:  
-> RX:        0  
-> **TX:        0**  
-> Other:        0  
-> **Combined:    1**
+\# ethtool -l **ens3**
+
+Channel parameters for **ens3**:  
+Pre-set maximums:  
+RX:        0  
+**TX:        0**  
+Other:        0  
+**Combined:    8**  
+Current hardware settings:  
+RX:        0  
+**TX:        0**  
+Other:        0  
+**Combined:    1**
 
 Again, you can adjust the egress number in two equally effective ways. Remember that setting it in a combined manner, though, scales both - the RX and TX  queue number.
 
-> \# ethtool -L combined 8
+\# ethtool -L combined 8
 
 Or to set egress only:
 
-> \# ethtool -L  tx 8
+\# ethtool -L  tx 8
 
 Now, you can recheck your settings with **ethtool -l** .
 
@@ -1229,22 +1143,22 @@ If [BQL](https://www.coverfire.com/articles/queueing-in-the-linux-network-stack/
 
 First, you should check the maximal and currently applied length.
 
->     # ethtool -g ens3
->     Ring parameters for eth0:
->     Pre-set maximums:
->     RX:   4096
->     RX Mini:  0
->     RX Jumbo: 0
->     TX:   4096
->     Current hardware settings:
->     RX:   512
->     RX Mini:  0
->     RX Jumbo: 0
->     TX:   512
+    # ethtool -g ens3
+    Ring parameters for eth0:
+    Pre-set maximums:
+    RX:   4096
+    RX Mini:  0
+    RX Jumbo: 0
+    TX:   4096
+    Current hardware settings:
+    RX:   512
+    RX Mini:  0
+    RX Jumbo: 0
+    TX:   512
 
 Then, you can increase it to the whatever length you see fit - here the maximum.
 
-> \# ethtool -G **ens3** ***tx*** **4096**
+\# ethtool -G **ens3** ***tx*** **4096**
 
 ### Hard-IRQs {#Hard-IRQs}
 
@@ -1268,4 +1182,4 @@ Appendix {#Appendix}
 
 ### Driver Queue Based Scaling {#Driver Queue Based Scaling}
 
-\[caption id="attachment\_2321" align="alignnone" width="11871"\]![ns\_tx\_driv\_qu\_scale.svg]({static}2016/12/ns_tx_driv_qu_scale-svg.png){.alignnone .size-full .wp-image-2321 width="11871" height="7540"} [To SVG](https://github.com/cherusk/kannjan/blob/master/ns_tx_driv_qu_scale.svg)\[/caption\]
+![ns\_tx\_driv\_qu\_scale.svg]({static}2016/12/ns_tx_driv_qu_scale-svg.png){.alignnone .size-full .wp-image-2321 width="11871" height="7540"} [To SVG](https://github.com/cherusk/kannjan/blob/master/ns_tx_driv_qu_scale.svg)

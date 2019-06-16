@@ -37,13 +37,15 @@ In the illustrations of this section one can see the most basic principle of an 
 
 Further, in the core network airships the most sophisticated laser aggregate will have to placed as well. It must be able to cater for different FSO types, e.g. ground and inter-back-haul link ones in the trivial case. It must support superior laser core peer platform targeting and influxing laser beam pointing auxiliary appliances to allow forming connections in the first place.
 
+
+![Global Topology]({static}2017/12/atm_distr_globe.png)![Global Topology Magnified]({static}2017/12/glob_top_zoom1.png)
+
 Ground located FSO transceivers are then relaying the core ground based internet traffic via multipathed optical channels to the core airborne forwarding platforms. Thereby, easily technical difficulties are perceivable that are mostly down to physical random phenomena which interfere with and degrade optical links. These are mostly connected to weather and geographical location.\[3\] To name a few, storm clouds, rain, snow or atmospheric turbulences.  Multipathing acts as a mitigation mechanism and a bandwidth scaling lever\[3\]. At the time of writing this,  10  FSO links with a maximum of 10 Gbit/s are feasible\[2\]. Nominally, therefore, to come into competition range of terrestrially based solutions, multipathing for at least the multipathing factor (***terrestrial bandwith)/(max FSO link bw)*** would have to be procured for. For a modestly scaled terrestrial link, this would juxtapose to a FSO multipathing factor of roughly **10**.
 
  
 
-\[gallery ids="2759,2758" type="columns" orderby="rand"\]
-
-\[caption id="attachment\_2761" align="alignnone" width="3964"\]![FSO Airborne Backbone Principle in Atmospheric Layering]({static}2017/12/atm_fso_princip1.png){.alignnone .size-full .wp-image-2761 width="3964" height="3055"} Fig1.: FSO Airborne Backbone Principle in Atmospheric Layering\[/caption\]
+---
+![FSO Airborne Backbone Principle in Atmospheric Layering]({static}2017/12/atm_fso_princip1.png){.alignnone .size-full .wp-image-2761 width="3964" height="3055"} Fig1.: FSO Airborne Backbone Principle in Atmospheric Layering}
 
 Since as covered further down in this article, an overall controlling/steering concept for such a large scale network system is needed, the best might be to also have the network decision taking computations steering happen in a centric manner, in the form of a ground operated SDN.
 
@@ -66,11 +68,11 @@ Enhanced Mitigation Approaches to Communication Channel degradations
 
 The most obvious, quite effective and already scientifically covered\[3\] approach to mitigating optics disturbances would be to form a flock of interconnectable relaying agent airships operating pervasively on lower altitudes operating in order to make disturbances highly reactively circumventable. You can see this way of mitigating in \[Fig2\]. Relaying entities and grounds station operations again would need precise synchronization. By increasing the density, this would become less burdensome.
 
-\[caption id="attachment\_2762" align="alignnone" width="3822"\]![Mitigation by steering]({static}2017/12/steer_mitig.png){.alignnone .size-full .wp-image-2762 width="3822" height="2913"} Fig2: Mitigation by steering\[/caption\]
+![Mitigation by steering]({static}2017/12/steer_mitig.png){.alignnone .size-full .wp-image-2762 width="3822" height="2913"} Fig2: Mitigation by steering
 
 Novel, though, is the idea to actually bridge the lower atmospheric layers to the core airships by maintaining again some airborne utility platforms geared system. This time, those utility entities would be needed to support an optical fibre cable link to the backbone platforms. This can shield the terrestrial-to-air initial hop from atmospheric effects completely. The technically incurred performance cost can be held confined thereby as well - see \[Fig3\].
 
-\[caption id="attachment\_2763" align="alignnone" width="3822"\]![Mitigation by fibre link to platform]({static}2017/12/fibre_mitig.png){.alignnone .size-full .wp-image-2763 width="3822" height="2913"} Fig,3: Mitigation by fibre link to platform\[/caption\]
+![Mitigation by fibre link to platform]({static}2017/12/fibre_mitig.png){.alignnone .size-full .wp-image-2763 width="3822" height="2913"} Fig,3: Mitigation by fibre link to platform
 
 Airships are know to be able to carry high volumes of masses,  in the range of tons. When respecting technical clearance, a roughly 25 km long fibre fabrics containing cable is not able to put a properly sized airship carrier at it's technical limits.
 

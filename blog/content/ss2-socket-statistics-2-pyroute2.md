@@ -6,16 +6,16 @@ Tags: automation, flows, json, kernel, linux, linux engineering, machine readabl
 Slug: ss2-socket-statistics-2-pyroute2
 Status: published
 
-Gist
+# Gist
 ----
 
 Disseminating a complementary and viably a more modern alternative to the established **ss** utility shipped with the well-known **iproute** package.
 
-#### How to attain ss2?
+### How to attain ss2?
 
 It's part of the [pyroute2 package install routines](https://github.com/svinota/pyroute2), so please follow those upstream to allow me to reduce redundancy in this regard.
 
-#### Example Run
+### Example Run
 
 **ss2** is offering, amongst many output formats, machine readable dumps of the kernel socket statistics. For it's renowned merits, json was chosen as the foremost default dumping format.
 
