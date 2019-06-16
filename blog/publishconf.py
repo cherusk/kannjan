@@ -18,6 +18,7 @@ FEED_ALL_ATOM = None
 CATEGORY_FEED_ATOM = None
 
 DELETE_OUTPUT_DIRECTORY = False
+GOOGLE_ANALYTICS = "UA-142207113-1"
 
 # Following items are often useful when publishing
 

@@ -16,12 +16,12 @@ PATH = 'content'
 DEFAULT_LANG = u'en'
 
 # Blogroll
-# LINKS = (('index', 'http://github.com/cherusk'),)
+LINKS = (('Blog', SITEURL + 'index.html' ),)
 
 STATIC_PATHS = ['meta']
 
 PLUGIN_PATHS = ['/home/matthias/Projects/pelican-plugins/']
-PLUGINS = ['pelican-toc', 'tag_cloud']
+PLUGINS = ['pelican-toc', 'tag_cloud', 'readtime']
 TOC = {
         'TOC_HEADERS'       : '^h[1-7]', # What headers should be included in
        # Expected format is a regular expression
