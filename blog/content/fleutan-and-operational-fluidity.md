@@ -1,7 +1,7 @@
 Title: Fleutan - and operational FLUIDITY
 Date: 2017-08-19 10:11
 Author: cherusk
-Category: LNX Network Engineering Research
+Category: Network Engineering
 Tags: analysis, bandwith product, bcc, correlation, cwnd, ebpf, flow grouping, flowing, flowing engineering, introspection, kernel, linux, linux engineering, mechanism, net traversal, network paths, network stack, networking, operations, perf, performance, python, qdisc, research, resource usage, ss, stack config, statistics, suite, system operations, tcp, tcp flows, tcp/ip, tool, traffic flows, traffic volume, trouble shooting, Tuning, user land
 Slug: fleutan-and-operational-fluidity
 Status: published

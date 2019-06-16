@@ -1,7 +1,7 @@
 Title: ss2 - Socket Statistics 2 (pyroute2)
 Date: 2018-09-18 13:29
 Author: cherusk
-Category: LNX Systems Engineering
+Category: Systems Engineering
 Tags: automation, flows, json, kernel, linux, linux engineering, machine readable, metrics, network stack, python, socket, statistics, tcp flows, tcp/ip, tool, utility
 Slug: ss2-socket-statistics-2-pyroute2
 Status: published

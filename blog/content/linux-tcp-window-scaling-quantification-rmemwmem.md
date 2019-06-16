@@ -1,7 +1,7 @@
 Title: Linux TCP - window scaling quantification | rmem,wmem
 Date: 2017-08-24 11:49
 Author: cherusk
-Category:  LNX Network Engineering Research
+Category:  Network Engineering
 Tags: bottle-neck, congestion control, core emulator, data series, explanation, flent, hint, interpretation, linux, network stack, research, scaling, tcp, tcp flows, tcp rmem, tcp wmem, testbed, transeive window scaling, Tuning
 Slug: linux-tcp-window-scaling-quantification-rmemwmem
 Status: published

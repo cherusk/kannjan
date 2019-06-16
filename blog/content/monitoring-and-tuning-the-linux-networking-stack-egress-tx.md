@@ -1,7 +1,7 @@
 Title: Monitoring and Tuning the Linux Networking Stack: Egress (TX)
 Date: 2016-12-25 19:59
 Author: cherusk
-Category: LNX Network Engineering Research
+Category: Network Engineering
 Tags: driver, driver queues, egress, ethtool, kernel, linux, Monitoring, msi, multi queueing, NAPI, network stack, networking, nic, performance, qdisc, queueing, queues, queuing discipline, sending, skb, softirq, stack traversal, tc, Traffic Control, transmission, transmit packet steering, transmitting, Tuning, TX, XPS
 Slug: monitoring-and-tuning-the-linux-networking-stack-egress-tx
 Status: published

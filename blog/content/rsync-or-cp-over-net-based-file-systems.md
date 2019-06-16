@@ -1,7 +1,7 @@
 Title: rsync or cp over net based file systems
 Date: 2016-08-16 01:00
 Author: cherusk
-Category: LNX Systems Engineering 
+Category: Systems Engineering 
 Tags: comparison, cp, data migration, genbackupdata, ibvirt, KVM/Qemu, linux, networking, nfs, performance, rsync, virt-builder, vs
 Slug: rsync-or-cp-over-net-based-file-systems
 Status: published
